@@ -732,8 +732,19 @@ fn rewrite_line_range(cmd: &str) -> Option<String> {
 
 /// Built-in transparent wrappers that use the same strip/recurse/re-prepend
 /// contract as user-configured `transparent_prefixes`.
-const BUILTIN_TRANSPARENT_PREFIXES: &[&str] =
-    &["noglob", "command", "builtin", "exec", "nocorrect"];
+const BUILTIN_TRANSPARENT_PREFIXES: &[&str] = &[
+    "uv run",
+    "noglob",
+    "command",
+    "builtin",
+    "exec",
+    "nocorrect",
+];
+
+/// Prefixes that RULES can match as a whole string, so an unfiltered inner
+/// command may fall through instead of dropping the rewrite. Shell keywords must
+/// never appear here: they are not spawnable, so `rtk <keyword> <cmd>` is broken.
+const ROUTABLE_WRAPPER_PREFIXES: &[&str] = &["uv run"];
 
 const MAX_PREFIX_DEPTH: usize = 10;
 
@@ -838,13 +849,23 @@ fn rewrite_segment_inner(
             if rest.is_empty() {
                 return None;
             }
-            return rewrite_segment_inner(rest, excluded, transparent_prefixes, depth + 1)
-                .map(|rewritten| format!("{} {}", prefix, rewritten));
+            if let Some(rewritten) =
+                rewrite_segment_inner(rest, excluded, transparent_prefixes, depth + 1)
+            {
+                return Some(format!("{} {}", prefix, rewritten));
+            }
+            // #2768: only a wrapper that is itself a routable command may fall
+            // through, because matching then re-tests the full prefixed string.
+            // Shell keywords are not spawnable, so `rtk exec foo` would be broken.
+            if !ROUTABLE_WRAPPER_PREFIXES.contains(&prefix) {
+                return None;
+            }
+            break;
         }
     }
 
-    // User-configured wrapper prefixes (e.g. `docker exec mycontainer`). Same
-    // strip-recurse-reprepend contract as the builtin list above.
+    // User-configured wrapper prefixes (e.g. `docker exec mycontainer`). These
+    // never fall through: an unmatched inner command drops the rewrite.
     for prefix in transparent_prefixes {
         if let Some(rest) = strip_word_prefix(trimmed, prefix) {
             if rest.is_empty() {
@@ -2542,7 +2563,7 @@ mod tests {
     fn test_rewrite_uv_run_pytest() {
         assert_eq!(
             rewrite_command_no_prefixes("uv run pytest tests/", &[]),
-            Some("rtk uv run pytest tests/".into())
+            Some("uv run rtk pytest tests/".into())
         );
     }
 
@@ -2550,7 +2571,7 @@ mod tests {
     fn test_rewrite_env_uv_run_pytest() {
         assert_eq!(
             rewrite_command_no_prefixes("PYTHONPATH=. uv run pytest tests/", &[]),
-            Some("PYTHONPATH=. rtk uv run pytest tests/".into())
+            Some("PYTHONPATH=. uv run rtk pytest tests/".into())
         );
     }
 
@@ -2558,7 +2579,7 @@ mod tests {
     fn test_rewrite_uv_run_python_m_pytest() {
         assert_eq!(
             rewrite_command_no_prefixes("uv run python -m pytest -q", &[]),
-            Some("rtk uv run python -m pytest -q".into())
+            Some("uv run rtk pytest -q".into())
         );
     }
 
@@ -2566,7 +2587,7 @@ mod tests {
     fn test_rewrite_uv_run_supported_inner_command() {
         assert_eq!(
             rewrite_command_no_prefixes("uv run ruff check .", &[]),
-            Some("rtk uv run ruff check .".into())
+            Some("uv run rtk ruff check .".into())
         );
     }
 
@@ -2635,18 +2656,41 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_keyword_prefix_does_not_fall_through_to_whole_string() {
+        // `rtk exec date` would be unspawnable, so an unfiltered inner command
+        // must drop the rewrite rather than re-test the prefixed string.
+        for cmd in [
+            "exec somethingunfiltered",
+            "noglob somethingunfiltered",
+            "command somethingunfiltered",
+            "builtin somethingunfiltered",
+            "nocorrect somethingunfiltered",
+        ] {
+            assert_eq!(
+                rewrite_command_no_prefixes(cmd, &[]),
+                None,
+                "Failed for command: {}",
+                cmd
+            );
+        }
+    }
+
+    #[test]
     fn test_rewrite_uv_run() {
-        let commands = vec![
-            "uv run python script.py",
-            "uv run pytest",
-            "uv run ruff check",
-            "uv run --project backend --extra dev python script.py",
+        let cases = vec![
+            ("uv run pytest", "uv run rtk pytest"),
+            ("uv run ruff check", "uv run rtk ruff check"),
+            ("uv run python script.py", "rtk uv run python script.py"),
+            (
+                "uv run --project backend --extra dev python script.py",
+                "rtk uv run --project backend --extra dev python script.py",
+            ),
         ];
 
-        for command in commands {
+        for (command, expected) in cases {
             assert_eq!(
                 rewrite_command_no_prefixes(command, &[]),
-                Some(format!("rtk {command}")),
+                Some(expected.to_string()),
                 "Failed for command: {}",
                 command
             );
