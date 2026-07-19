@@ -223,8 +223,6 @@ fn filter_pip_outdated(output: &str) -> String {
         ));
     }
 
-    result.push_str("\n[hint] Run `pip install --upgrade <package>` to update\n");
-
     result.trim().to_string()
 }
 

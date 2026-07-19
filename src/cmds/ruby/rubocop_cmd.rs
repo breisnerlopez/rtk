@@ -208,10 +208,7 @@ fn filter_rubocop_json(output: &str) -> String {
     }
 
     if correctable_count > 0 {
-        result.push_str(&format!(
-            "\n({} correctable, run `rubocop -A`)",
-            correctable_count
-        ));
+        result.push_str(&format!("\n({} correctable)", correctable_count));
     }
 
     result.trim().to_string()
@@ -457,10 +454,9 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_rubocop_correctable_hint() {
+    fn test_filter_rubocop_correctable_count() {
         let result = filter_rubocop_json(with_offenses_json());
         assert!(result.contains("3 correctable"));
-        assert!(result.contains("rubocop -A"));
     }
 
     #[test]

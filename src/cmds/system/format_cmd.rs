@@ -255,8 +255,6 @@ fn filter_black_output(output: &str) -> String {
         if files_unchanged > 0 {
             result.push_str(&format!("\n{} files already formatted\n", files_unchanged));
         }
-
-        result.push_str("\n[hint] Run `black .` to format these files\n");
     } else {
         // Fallback: show raw output
         result.push_str(output.trim());
@@ -358,7 +356,6 @@ Oh no! 💥 💔 💥
         assert!(result.contains("main.py"));
         assert!(result.contains("test_utils.py"));
         assert!(result.contains("3 files already formatted"));
-        assert!(result.contains("Run `black .`"));
     }
 
     #[test]

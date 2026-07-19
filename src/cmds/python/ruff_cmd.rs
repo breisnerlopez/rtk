@@ -218,13 +218,6 @@ pub fn filter_ruff_check_json(output: &str) -> String {
         }
     }
 
-    if fixable_count > 0 {
-        result.push_str(&format!(
-            "\n[hint] Run `ruff check --fix` to auto-fix {} issues\n",
-            fixable_count
-        ));
-    }
-
     result.trim().to_string()
 }
 
@@ -307,8 +300,6 @@ pub fn filter_ruff_format(output: &str) -> String {
             if files_checked > 0 {
                 result.push_str(&format!("\n{} files already formatted\n", files_checked));
             }
-
-            result.push_str("\n[hint] Run `ruff format` to format these files\n");
         }
     } else {
         // Write mode or other output - show summary

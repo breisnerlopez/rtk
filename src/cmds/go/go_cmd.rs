@@ -626,7 +626,6 @@ fn format_go_build_failure(output: &str, exit_code: i32) -> String {
 
     let mut result = String::new();
     result.push_str(&format!("Go build: failed (exit {})\n", exit_code));
-    result.push_str("═══════════════════════════════════════\n");
 
     const MAX_GO_BUILD_ERRORS: usize = CAP_ERRORS;
     for (i, line) in lines.iter().take(MAX_GO_BUILD_ERRORS).enumerate() {
