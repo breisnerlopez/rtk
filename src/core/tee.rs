@@ -14,8 +14,10 @@ const DEFAULT_MAX_FILES: usize = 20;
 const DEFAULT_MAX_FILE_SIZE: usize = 1_048_576;
 
 /// Sanitize a command slug for use in filenames.
-/// Replaces non-alphanumeric chars (except underscore/hyphen) with underscore,
-/// truncates at 40 chars.
+/// Replaces non-alphanumeric chars (except underscore/hyphen) with underscore.
+/// Long slugs (usually an embedded file path that duplicates the command the LLM
+/// already issued) collapse to a short readable prefix plus a collision-resistant
+/// hash, keeping recovery filenames unique but compact — fewer tokens per tee hint.
 fn sanitize_slug(slug: &str) -> String {
     let sanitized: String = slug
         .chars()
@@ -27,11 +29,25 @@ fn sanitize_slug(slug: &str) -> String {
             }
         })
         .collect();
-    if sanitized.len() > 40 {
-        sanitized[..40].to_string()
-    } else {
-        sanitized
+    const MAX_READABLE: usize = 24;
+    if sanitized.len() <= MAX_READABLE {
+        return sanitized;
     }
+    let prefix: String = sanitized.chars().take(8).collect();
+    format!("{}_{}", prefix, short_hash(&sanitized))
+}
+
+/// First 6 hex chars (24 bits) of the SHA-256 of `s` — a compact, collision-resistant
+/// tag. Distinct slugs get distinct tags (~1-in-16M collision), so shortening never
+/// makes two different commands share a tee filename (the epoch already scopes writes
+/// to the same second, exactly as before).
+fn short_hash(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(s.as_bytes())
+        .iter()
+        .take(3)
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 /// Get the tee directory, respecting config and env overrides.
@@ -289,9 +305,23 @@ mod tests {
         assert_eq!(sanitize_slug("cargo test"), "cargo_test");
         assert_eq!(sanitize_slug("cargo-test"), "cargo-test");
         assert_eq!(sanitize_slug("go/test/./pkg"), "go_test___pkg");
-        // Truncate at 40
-        let long = "a".repeat(50);
-        assert_eq!(sanitize_slug(&long).len(), 40);
+        // Long slugs (embedded paths) collapse to a readable prefix + hash, staying short.
+        let long = format!("grep_0_{}", "a".repeat(50));
+        let short = sanitize_slug(&long);
+        assert!(
+            short.len() < 24,
+            "long slug should shorten, got '{}'",
+            short
+        );
+        assert!(
+            short.starts_with("grep_0_a"),
+            "keeps a readable prefix, got '{}'",
+            short
+        );
+        // Deterministic, and different slugs never collide onto the same filename.
+        assert_eq!(sanitize_slug(&long), short);
+        let other = sanitize_slug(&format!("grep_1_{}", "a".repeat(50)));
+        assert_ne!(other, short, "distinct slugs must not collide");
     }
 
     #[test]
