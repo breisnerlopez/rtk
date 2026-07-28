@@ -2,10 +2,14 @@
 
 use crate::core::utils::composer_bin_dirs;
 use regex::{Regex, RegexSet};
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use super::lexer::{shell_split, split_on_operators, tokenize, ParsedToken, PipeKind, TokenKind};
+use super::lexer::{
+    shell_split, split_on_operators, tokenize, tokenize_with_newlines, ParsedToken, PipeKind,
+    TokenKind,
+};
 use super::rules::{IGNORED_EXACT, IGNORED_PREFIXES, RULES};
 
 const PHP_TOOL_NAMES: [&str; 6] = ["phpunit", "phpstan", "ecs", "pest", "paratest", "pint"];
@@ -590,7 +594,12 @@ pub fn rewrite_command(
         || trimmed.contains("||")
         || trimmed.contains(';')
         || trimmed.contains('|')
-        || trimmed.contains(" & ");
+        || trimmed.contains(" & ")
+        // A newline separates clauses too, so a command that starts with `rtk`
+        // but has more lines (`rtk gain\nls -la`) must still fall through so the
+        // later lines get rewritten instead of being returned verbatim.
+        || trimmed.contains('\n')
+        || trimmed.contains('\r');
     if !has_compound && (trimmed.starts_with("rtk ") || trimmed == "rtk") {
         return Some(trimmed.to_string());
     }
@@ -693,7 +702,19 @@ fn rewrite_compound(
     excluded: &[ExcludePattern],
     transparent_prefixes: &[String],
 ) -> Option<String> {
-    let tokens = tokenize(cmd);
+    // Normalize CRLF/lone-CR to LF so one logical newline yields exactly one
+    // separator (avoids emitting a blank line for `\r\n`). Both the tokens and the
+    // slices below are taken from `cmd`, so they stay consistent.
+    let normalized: Cow<str> = if cmd.contains('\r') {
+        Cow::Owned(cmd.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(cmd)
+    };
+    let cmd = normalized.as_ref();
+    // Newline-aware: a bare `\n` separates clauses just like `;`, so multi-line
+    // commands (e.g. `cd /x\ngrep foo`) get each clause rewritten instead of being
+    // swallowed as a single unrewritable segment.
+    let tokens = tokenize_with_newlines(cmd);
     let has_pipe = tokens
         .iter()
         .any(|token| matches!(token.kind, TokenKind::Pipe(_)));
@@ -727,6 +748,9 @@ fn rewrite_compound(
                     if after < cmd.len() {
                         result.push(' ');
                     }
+                } else if tok.value == "\n" {
+                    // Preserve the newline verbatim (no surrounding spaces), like `;`.
+                    result.push('\n');
                 } else {
                     result.push(' ');
                     result.push_str(&tok.value);
@@ -3884,6 +3908,71 @@ mod tests {
             Some("rtk git status; rtk cargo test".into())
         );
     }
+
+    #[test]
+    fn test_rewrite_compound_newline_cd_prefix() {
+        // A bare `\n` separates clauses like `;`: the `cd` clause is left untouched
+        // and the following clause is rewritten. This is the common worktree pattern
+        // (`cd <worktree>\n<cmd>`) that previously escaped rewriting entirely.
+        assert_eq!(
+            rewrite_command_no_prefixes("cd /x\ngrep foo bar", &[]),
+            Some("cd /x\nrtk grep foo bar".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_compound_newline_both_sides() {
+        assert_eq!(
+            rewrite_command_no_prefixes("git status\ngrep foo bar", &[]),
+            Some("rtk git status\nrtk grep foo bar".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_compound_newline_with_pipe() {
+        // Newline splits into clauses; the pipeline final stage inside the second
+        // clause still gets its producer left raw and `grep` rewritten.
+        assert_eq!(
+            rewrite_command_no_prefixes("cd /x\ngit log -10 | grep feat", &[]),
+            Some("cd /x\ngit log -10 | rtk grep feat".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_compound_newline_final() {
+        // A trailing newline is stripped by the outer `.trim()` before rewriting
+        // (harmless: a trailing blank line is a no-op), so no spurious segment.
+        assert_eq!(
+            rewrite_command_no_prefixes("grep foo bar\n", &[]),
+            Some("rtk grep foo bar".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_compound_newline_after_rtk_prefix() {
+        // Regression for the `has_compound` fast-path: a command that starts with
+        // `rtk` but has more lines must still rewrite the later lines.
+        assert_eq!(
+            rewrite_command_no_prefixes("rtk gain\nls -la", &[]),
+            Some("rtk gain\nrtk ls -la".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_compound_crlf_single_separator() {
+        // CRLF collapses to a single LF separator (no spurious blank line).
+        assert_eq!(
+            rewrite_command_no_prefixes("cd /x\r\ngrep foo", &[]),
+            Some("cd /x\nrtk grep foo".into())
+        );
+    }
+
+    // NOTE: safety of `\n` inside `$(...)`/backticks is enforced one layer up, at
+    // the hook/permission boundary (command substitution defers, never rewrites) —
+    // see `test_hook_newline_inside_command_substitution_defers` in hooks::hook_cmd.
+    // `rewrite_command` deliberately still rewrites the leading command of a segment
+    // even when a substitution is present (cf. `test_rewrite_command_substitution_passthrough`),
+    // so there is nothing to assert about substitution at this layer.
 
     #[test]
     fn test_rewrite_compound_pipe_raw_filter() {

@@ -1075,6 +1075,23 @@ mod tests {
     }
 
     #[test]
+    fn test_hook_newline_inside_command_substitution_defers() {
+        // Newline-aware rewriting must not corrupt a value captured in a multi-line
+        // `$(...)` / backtick substitution: the hook boundary defers on any command
+        // substitution, so no rewrite is emitted. Guards the newline-split change.
+        for cmd in [
+            "files=$(\n  grep foo bar\n)",
+            "echo $(grep a\ngrep b)",
+            "echo `grep foo\nbar`",
+        ] {
+            assert!(
+                end_to_end(cmd).is_none(),
+                "multi-line substitution must defer (no rewrite) for {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_copilot_cli_cve_file_redirect_amp_returns_none() {
         assert!(
             end_to_end("git status >& /tmp/evil").is_none(),

@@ -26,6 +26,15 @@ pub fn tokenize(input: &str) -> Vec<ParsedToken> {
     tokenize_inner(input, false)
 }
 
+/// Like [`tokenize`], but emits a `\n` (and `\r`) as an `Operator` token instead of
+/// treating it as plain whitespace. Multi-line command strings (e.g. `cd /x\ngrep foo`,
+/// common in worktree/`cd`-prefixed workflows) are equivalent to `;`-separated clauses,
+/// so the rewriter must break on them to reach each clause. See [`split_for_permissions`],
+/// which already tokenizes with newlines enabled.
+pub fn tokenize_with_newlines(input: &str) -> Vec<ParsedToken> {
+    tokenize_inner(input, true)
+}
+
 fn tokenize_inner(input: &str, emit_newline: bool) -> Vec<ParsedToken> {
     let mut tokens = Vec::new();
     let mut current = String::new();
