@@ -263,6 +263,14 @@ fn tokenize_inner(input: &str, emit_newline: bool) -> Vec<ParsedToken> {
                     offset: byte_pos,
                 });
                 byte_pos += char_len;
+                // Treat CRLF as a single logical newline so it yields exactly one
+                // separator token (no spurious blank clause). A raw CR/LF *inside*
+                // quotes never reaches here — it's consumed by the quote branch
+                // above — so this only collapses the real newline tokens.
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                    byte_pos += 1;
+                }
                 current_start = byte_pos;
             }
             c if c.is_whitespace() => {
@@ -1275,6 +1283,9 @@ mod tests {
         assert!(!contains_unattestable_construct("git log | head"));
         assert!(!contains_unattestable_construct("sleep 1 &"));
         assert!(!contains_unattestable_construct("git status\ncargo build"));
+        assert!(!contains_unattestable_construct(
+            "git status\r\ncargo build"
+        ));
     }
 
     #[test]
@@ -1342,6 +1353,30 @@ mod tests {
     #[test]
     fn test_split_perms_newline_inside_quotes_not_split() {
         let segments = split_for_permissions("echo 'line1\nline2'");
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].starts_with("echo"));
+    }
+
+    #[test]
+    fn test_split_perms_crlf() {
+        // CRLF between clauses is one separator (parity with LF): the permission
+        // layer must still see each clause as its own segment so a command hidden
+        // after a CRLF is scrutinized, not folded into its predecessor.
+        assert_eq!(
+            split_for_permissions("git status\r\nrm -rf ~"),
+            vec!["git status", "rm -rf ~"]
+        );
+    }
+
+    #[test]
+    fn test_split_perms_cr_inside_quotes_not_split() {
+        // A raw CR (or CRLF) *inside* quotes is not a separator, so it can't be
+        // used to smuggle a second command past per-segment permission checks: the
+        // quoted content stays part of a single segment.
+        let segments = split_for_permissions("echo 'a\rrm -rf ~'");
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].starts_with("echo"));
+        let segments = split_for_permissions("echo \"a\r\nrm -rf ~\"");
         assert_eq!(segments.len(), 1);
         assert!(segments[0].starts_with("echo"));
     }

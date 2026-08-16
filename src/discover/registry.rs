@@ -2,7 +2,6 @@
 
 use crate::core::utils::composer_bin_dirs;
 use regex::{Regex, RegexSet};
-use std::borrow::Cow;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -702,15 +701,6 @@ fn rewrite_compound(
     excluded: &[ExcludePattern],
     transparent_prefixes: &[String],
 ) -> Option<String> {
-    // Normalize CRLF/lone-CR to LF so one logical newline yields exactly one
-    // separator (avoids emitting a blank line for `\r\n`). Both the tokens and the
-    // slices below are taken from `cmd`, so they stay consistent.
-    let normalized: Cow<str> = if cmd.contains('\r') {
-        Cow::Owned(cmd.replace("\r\n", "\n").replace('\r', "\n"))
-    } else {
-        Cow::Borrowed(cmd)
-    };
-    let cmd = normalized.as_ref();
     // Newline-aware: a bare `\n` separates clauses just like `;`, so multi-line
     // commands (e.g. `cd /x\ngrep foo`) get each clause rewritten instead of being
     // swallowed as a single unrewritable segment.
@@ -3964,6 +3954,23 @@ mod tests {
         assert_eq!(
             rewrite_command_no_prefixes("cd /x\r\ngrep foo", &[]),
             Some("cd /x\nrtk grep foo".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_compound_cr_inside_quotes_not_a_separator() {
+        // A raw CR *inside* a quoted argument must not be treated as a clause
+        // separator: it stays part of the (single) segment and is preserved
+        // verbatim. Regression guard for over-broad CRLF normalization that used
+        // to `replace('\r', "\n")` across the whole command, splitting quoted CRs.
+        assert_eq!(
+            rewrite_command_no_prefixes("grep 'a\rb' file.txt", &[]),
+            Some("rtk grep 'a\rb' file.txt".into())
+        );
+        // Same for a CRLF sequence embedded in a quoted argument.
+        assert_eq!(
+            rewrite_command_no_prefixes("grep \"a\r\nb\" file.txt", &[]),
+            Some("rtk grep \"a\r\nb\" file.txt".into())
         );
     }
 
