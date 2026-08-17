@@ -597,6 +597,13 @@ pub fn rewrite_command(
     let compiled = compile_exclude_patterns(excluded);
     let normalized_prefixes = normalize_transparent_prefixes(transparent_prefixes);
 
+    // Only an unquoted `\n` starts a new command line. A lone `\r` (classic-Mac
+    // EOL, no trailing `\n`) is NOT a separator — bash runs `git status\rgit log`
+    // as a single command with a CR inside a word — so it stays on the single-line
+    // path and is prefixed once, matching how `split_for_permissions` now segments
+    // it (one command). Widening this gate to `\r` reconstructed the block with a
+    // raw-CR joiner, emitting a mangled single command with two `rtk` prefixes that
+    // diverged from the one command the permission layer approved.
     if trimmed.contains('\n') {
         return rewrite_multiline_block(trimmed, &compiled, &normalized_prefixes);
     }
@@ -852,9 +859,16 @@ fn rewrite_multiline_block(
         return None;
     }
 
-    // The lexer emits one newline token per `\r` and per `\n` (CRLF = two
-    // tokens), so the parity check must count both bytes individually.
-    let raw_breaks = cmd.chars().filter(|c| matches!(c, '\n' | '\r')).count();
+    // The lexer emits a newline token for each `\n` and for the `\r` of a CRLF
+    // pair (CRLF = two tokens), but NOT for a lone `\r` (a bare CR is not a
+    // separator). Count exactly that set here, so the parity check flags only
+    // newlines the lexer swallowed via quote state — never a lone CR.
+    let bytes = cmd.as_bytes();
+    let raw_breaks = bytes
+        .iter()
+        .enumerate()
+        .filter(|&(i, &b)| b == b'\n' || (b == b'\r' && bytes.get(i + 1) == Some(&b'\n')))
+        .count();
     if raw_breaks != newline_offsets.len() {
         // Every newline swallowed by quote state with quotes balanced at EOF
         // is one logical command (a multi-line commit message), not a hidden
@@ -1535,6 +1549,31 @@ mod tests {
             assert_eq!(
                 rewrite_command_no_prefixes("git status\r\ngit log -3", &[]),
                 Some("rtk git status\r\nrtk git log -3".into())
+            );
+        }
+
+        #[test]
+        fn test_lone_cr_is_one_command_single_prefix() {
+            // A bare `\r` with no `\n` is NOT a line break: bash runs the whole
+            // string as one command (the CR is an ordinary character in a word), so
+            // it gets a SINGLE `rtk` prefix, matching the one segment
+            // `split_for_permissions` gates. The earlier attempt (#3600) emitted two
+            // prefixes joined by a raw `\r`, a mangled single command that diverged
+            // from the permission verdict; KuSh refuted it and this is the fix.
+            assert_eq!(
+                rewrite_command_no_prefixes("git status\rgit log --oneline -3", &[]),
+                Some("rtk git status\rgit log --oneline -3".into())
+            );
+        }
+
+        #[test]
+        fn test_lone_cr_inside_quotes_rewrites_as_one_command() {
+            // The `\r` lives inside quotes, so it is not a separator: the block
+            // is one logical command and gets a single prefix (same guard the
+            // `\n`-in-quotes case relies on).
+            assert_eq!(
+                rewrite_command_no_prefixes("git commit -m 'subject\rin body'", &[]),
+                Some("rtk git commit -m 'subject\rin body'".into())
             );
         }
 

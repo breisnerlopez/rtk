@@ -253,7 +253,25 @@ fn tokenize_inner(input: &str, emit_newline: bool) -> Vec<ParsedToken> {
                 });
                 current_start = byte_pos;
             }
-            '\n' | '\r' if emit_newline => {
+            // `\n`, and the `\r` of a CRLF pair, are command separators. A LONE `\r`
+            // (classic-Mac EOL, not followed by `\n`) is NOT: bash treats a bare CR as
+            // an ordinary character inside a word — `git status$'\r'git log` runs as a
+            // single command — so gating on it would over-segment and the rewriter
+            // would mis-join it. A lone `\r` therefore falls through to the whitespace
+            // arm below (it is Unicode-whitespace), a word break at most, never a
+            // command boundary. CRLF still emits both tokens (unchanged), so
+            // rewrite_multiline_block keeps preserving the `\r\n` bytes.
+            '\n' if emit_newline => {
+                flush_arg(&mut tokens, &mut current, current_start);
+                tokens.push(ParsedToken {
+                    kind: TokenKind::Operator,
+                    value: "\n".into(),
+                    offset: byte_pos,
+                });
+                byte_pos += char_len;
+                current_start = byte_pos;
+            }
+            '\r' if emit_newline && chars.peek() == Some(&'\n') => {
                 flush_arg(&mut tokens, &mut current, current_start);
                 tokens.push(ParsedToken {
                     kind: TokenKind::Operator,
@@ -1310,6 +1328,35 @@ mod tests {
     }
 
     #[test]
+    fn test_split_perms_lone_cr_is_not_a_boundary() {
+        // A bare `\r` (no `\n`) is NOT a command separator: bash treats it as an
+        // ordinary character, running `git status\rrm -rf ~` as a single command
+        // (the `rm` never executes on its own). So gating must see ONE segment, not
+        // two — splitting here would over-segment vs. what the shell actually runs.
+        // Verified: `bash -c $'git status\rrm -rf ~'` is one (mangled) git command.
+        assert_eq!(
+            split_for_permissions("git status\rrm -rf ~"),
+            vec!["git status\rrm -rf ~"]
+        );
+    }
+
+    #[test]
+    fn test_split_perms_crlf_splits_like_newline() {
+        // CRLF is still a boundary — the `\n` (and the paired `\r`) separate.
+        assert_eq!(
+            split_for_permissions("git status\r\ncargo build"),
+            vec!["git status", "cargo build"]
+        );
+    }
+
+    #[test]
+    fn test_split_perms_lone_cr_inside_quotes_not_split() {
+        let segments = split_for_permissions("echo 'line1\rline2'");
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].starts_with("echo"));
+    }
+
+    #[test]
     fn test_split_perms_background_ampersand() {
         assert_eq!(
             split_for_permissions("git status & rm -rf ~"),
@@ -1361,5 +1408,7 @@ mod tests {
         assert_eq!(newline_ops("git status\ngit log"), 1);
         assert_eq!(newline_ops("echo 'line1\nline2'"), 0);
         assert_eq!(newline_ops("git status\r\ngit log"), 2);
+        // A lone `\r` (no following `\n`) is not a separator → no newline operator.
+        assert_eq!(newline_ops("git status\rgit log"), 0);
     }
 }
