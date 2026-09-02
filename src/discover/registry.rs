@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use super::lexer::{
-    shell_split, split_on_operators, tokenize, tokenize_with_newlines, ParsedToken, PipeKind,
-    TokenKind,
+    is_crlf_at, shell_split, split_on_operators, tokenize, tokenize_with_newlines, ParsedToken,
+    PipeKind, TokenKind,
 };
 use super::rules::{IGNORED_EXACT, IGNORED_PREFIXES, RULES};
 
@@ -867,7 +867,7 @@ fn rewrite_multiline_block(
     let raw_breaks = bytes
         .iter()
         .enumerate()
-        .filter(|&(i, &b)| b == b'\n' || (b == b'\r' && bytes.get(i + 1) == Some(&b'\n')))
+        .filter(|&(i, &b)| b == b'\n' || is_crlf_at(bytes, i))
         .count();
     if raw_breaks != newline_offsets.len() {
         // Every newline swallowed by quote state with quotes balanced at EOF

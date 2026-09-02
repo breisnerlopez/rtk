@@ -33,11 +33,20 @@ pub fn tokenize_with_newlines(input: &str) -> Vec<ParsedToken> {
     tokenize_inner(input, true)
 }
 
+/// A CRLF pair starts at byte `i` (the `\r` of a `\r\n`). A lone `\r` — a bare
+/// CR with no `\n` after it — is NOT a CRLF and is never a command separator
+/// (see `tokenize_inner`). The single source of the CRLF-vs-lone-CR rule, shared
+/// by the lexer and the multi-line parity check in `registry`.
+pub(crate) fn is_crlf_at(bytes: &[u8], i: usize) -> bool {
+    bytes.get(i) == Some(&b'\r') && bytes.get(i + 1) == Some(&b'\n')
+}
+
 fn tokenize_inner(input: &str, emit_newline: bool) -> Vec<ParsedToken> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut current_start: usize = 0;
     let mut byte_pos: usize = 0;
+    let bytes = input.as_bytes();
     let mut chars = input.chars().peekable();
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -261,17 +270,7 @@ fn tokenize_inner(input: &str, emit_newline: bool) -> Vec<ParsedToken> {
             // arm below (it is Unicode-whitespace), a word break at most, never a
             // command boundary. CRLF still emits both tokens (unchanged), so
             // rewrite_multiline_block keeps preserving the `\r\n` bytes.
-            '\n' if emit_newline => {
-                flush_arg(&mut tokens, &mut current, current_start);
-                tokens.push(ParsedToken {
-                    kind: TokenKind::Operator,
-                    value: "\n".into(),
-                    offset: byte_pos,
-                });
-                byte_pos += char_len;
-                current_start = byte_pos;
-            }
-            '\r' if emit_newline && chars.peek() == Some(&'\n') => {
+            c @ ('\n' | '\r') if emit_newline && (c == '\n' || is_crlf_at(bytes, byte_pos)) => {
                 flush_arg(&mut tokens, &mut current, current_start);
                 tokens.push(ParsedToken {
                     kind: TokenKind::Operator,
