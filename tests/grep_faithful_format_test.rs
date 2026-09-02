@@ -197,22 +197,7 @@ fn dash_l_and_dash_cap_l_match_grep() {
     let f2 = write(d.path(), "miss.txt", "nothing to see\n");
     let f3 = write(d.path(), "hit2.txt", "tenant_id again\n");
 
-    let cmp = |args: &[&str]| {
-        let (rtk, rc) = rtk_grep(args);
-        let out = Command::new("grep").args(args).output().expect("grep");
-        assert_eq!(
-            rtk,
-            String::from_utf8_lossy(&out.stdout),
-            "stdout mismatch for grep {args:?}"
-        );
-        assert_eq!(
-            rc,
-            out.status.code(),
-            "exit code mismatch for grep {args:?}"
-        );
-    };
-
-    cmp(&["-l", "tenant_id", &f1, &f2, &f3]); // -l leading (the token that broke)
-    cmp(&["tenant_id", &f1, &f2, &f3, "-l"]); // -l trailing
-    cmp(&["-L", "tenant_id", &f1, &f2, &f3]); // -L files-without-match
+    assert_eq_grep(&["-l", "tenant_id", &f1, &f2, &f3]); // -l leading (the token that broke)
+    assert_eq_grep(&["tenant_id", &f1, &f2, &f3, "-l"]); // -l trailing
+    assert_eq_grep(&["-L", "tenant_id", &f1, &f2, &f3]); // -L files-without-match
 }
